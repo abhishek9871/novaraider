@@ -17,6 +17,14 @@ export class UI extends Phaser.Scene {
   private bossHealthBarBg!: Phaser.GameObjects.Graphics;
   private bossHealthText!: Phaser.GameObjects.Text;
   private bossHealthContainer!: Phaser.GameObjects.Container;
+  private uiWidth: number = 800;
+  private uiHeight: number = 600;
+  private touchEnabled: boolean = false;
+  private joystickBase!: Phaser.GameObjects.Graphics;
+  private joystickThumb!: Phaser.GameObjects.Graphics;
+  private joystickActive: boolean = false;
+  private joystickMaxRadius: number = 50;
+  private joystickCenter: Phaser.Math.Vector2 = new Phaser.Math.Vector2(80, 520);
 
   constructor() {
     super('UI');
@@ -24,6 +32,8 @@ export class UI extends Phaser.Scene {
 
   create() {
     this.loadSettings();
+
+    this.touchEnabled = this.sys.game.device.input.touch;
 
     this.scoreText = this.add.text(16, 16, 'Score: 0', {
       fontSize: '24px',
@@ -49,6 +59,7 @@ export class UI extends Phaser.Scene {
       fontSize: '24px',
       color: '#ffffff',
     });
+    this.muteButton.setOrigin(1, 0);
     this.muteButton.setInteractive({ useHandCursor: true });
     this.muteButton.on('pointerdown', () => this.toggleMute());
 
@@ -56,6 +67,7 @@ export class UI extends Phaser.Scene {
       fontSize: '24px',
       color: '#ffffff',
     });
+    this.settingsButton.setOrigin(1, 0);
     this.settingsButton.setInteractive({ useHandCursor: true });
     this.settingsButton.on('pointerdown', () => this.toggleSettings());
 
@@ -88,6 +100,13 @@ export class UI extends Phaser.Scene {
     });
 
     this.createBossHealthBar();
+
+    this.setupJoystick();
+
+    this.layoutUI(this.scale.gameSize.width, this.scale.gameSize.height);
+    this.scale.on('resize', (gameSize: Phaser.Structs.Size) => {
+      this.layoutUI(gameSize.width, gameSize.height);
+    });
   }
 
   private createBossHealthBar() {
@@ -116,7 +135,7 @@ export class UI extends Phaser.Scene {
   private updateBossHealthBar(hp: number, maxHp: number) {
     const barWidth = 400;
     const barHeight = 20;
-    const x = 200;
+    const x = (this.uiWidth - barWidth) / 2;
     const y = 50;
 
     this.bossHealthBarBg.clear();
@@ -132,6 +151,7 @@ export class UI extends Phaser.Scene {
     this.bossHealthBar.fillRect(x, y, currentWidth, barHeight);
 
     this.bossHealthText.setText(`BOSS: ${hp}/${maxHp}`);
+    this.bossHealthText.setPosition(this.uiWidth / 2, 30);
   }
 
   private hideBossHealthBar() {
@@ -271,5 +291,81 @@ export class UI extends Phaser.Scene {
     const mute = sessionStorage.getItem('sfMute');
     if (volume) this.sound.volume = parseFloat(volume);
     if (mute) this.sound.mute = mute === 'true';
+  }
+
+  private layoutUI(width: number, height: number) {
+    this.uiWidth = width;
+    this.uiHeight = height;
+    this.scoreText.setPosition(16, 16);
+    this.powerUpText.setPosition(16, 50);
+    this.muteButton.setPosition(this.uiWidth - 16, 16);
+    this.settingsButton.setPosition(this.uiWidth - 56, 16);
+    this.pauseText.setPosition(this.uiWidth / 2, this.uiHeight / 2);
+    if (this.settingsPanel) {
+      this.settingsPanel.setPosition(this.uiWidth / 2 - 150, this.uiHeight / 2 - 100);
+    }
+    if (this.bossHealthText) {
+      this.bossHealthText.setPosition(this.uiWidth / 2, 30);
+    }
+    this.joystickCenter.set(80, this.uiHeight - 80);
+    if (this.joystickBase) {
+      this.joystickBase.setPosition(this.joystickCenter.x, this.joystickCenter.y);
+    }
+    if (this.joystickThumb && !this.joystickActive) {
+      this.joystickThumb.setPosition(this.joystickCenter.x, this.joystickCenter.y);
+    }
+  }
+
+  private setupJoystick() {
+    if (!this.touchEnabled) {
+      return;
+    }
+
+    this.joystickBase = this.add.graphics();
+    this.joystickBase.fillStyle(0xffffff, 0.1);
+    this.joystickBase.lineStyle(2, 0xffffff, 0.3);
+    this.joystickBase.fillCircle(0, 0, this.joystickMaxRadius);
+    this.joystickBase.strokeCircle(0, 0, this.joystickMaxRadius);
+
+    this.joystickThumb = this.add.graphics();
+    this.joystickThumb.fillStyle(0xffffff, 0.5);
+    this.joystickThumb.fillCircle(0, 0, 18);
+
+    this.joystickBase.setPosition(this.joystickCenter.x, this.joystickCenter.y);
+    this.joystickThumb.setPosition(this.joystickCenter.x, this.joystickCenter.y);
+
+    this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
+      if (p.x <= this.uiWidth * 0.5) {
+        this.joystickActive = true;
+        this.updateJoystick(p.x, p.y);
+      }
+    });
+    this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
+      if (!this.joystickActive) return;
+      this.updateJoystick(p.x, p.y);
+    });
+    this.input.on('pointerup', () => {
+      this.joystickActive = false;
+      this.joystickThumb.setPosition(this.joystickCenter.x, this.joystickCenter.y);
+      const gameScene = this.scene.get('Game');
+      gameScene.events.emit('joystickMove', { x: 0, y: 0 });
+    });
+  }
+
+  private updateJoystick(px: number, py: number) {
+    const dx = px - this.joystickCenter.x;
+    const dy = py - this.joystickCenter.y;
+    const len = Math.hypot(dx, dy);
+    const clamped = Math.min(len, this.joystickMaxRadius);
+    const angle = Math.atan2(dy, dx);
+    const nx = Math.cos(angle);
+    const ny = Math.sin(angle);
+    const tx = this.joystickCenter.x + nx * clamped;
+    const ty = this.joystickCenter.y + ny * clamped;
+    this.joystickThumb.setPosition(tx, ty);
+    const vx = (clamped / this.joystickMaxRadius) * nx;
+    const vy = (clamped / this.joystickMaxRadius) * ny;
+    const gameScene = this.scene.get('Game');
+    gameScene.events.emit('joystickMove', { x: vx, y: vy });
   }
 }

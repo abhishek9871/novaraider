@@ -7,6 +7,7 @@ import {
   calculateEnemySpeed,
   shouldSpawnBoss,
 } from '../utils/GameUtils.js';
+import { applyScale } from '../systems/ScaleManager.js';
 
 export class Game extends Phaser.Scene {
   private player!: Phaser.Physics.Arcade.Sprite;
@@ -45,9 +46,37 @@ export class Game extends Phaser.Scene {
   private gameStartTime = 0;
   private enemiesDestroyed = 0;
   private powerUpsCollected = 0;
+  private touchEnabled = false;
+  private worldWidth = 800;
+  private worldHeight = 600;
+  private joystickVector: Phaser.Math.Vector2 = new Phaser.Math.Vector2(0, 0);
 
   constructor() {
     super('Game');
+  }
+
+  private handleResize(gameSize: Phaser.Structs.Size) {
+    const { width, height } = gameSize;
+    const res = applyScale(this, this.physics.world, this.cameras.main, width, height);
+    this.worldWidth = res.worldWidth;
+    this.worldHeight = res.worldHeight;
+
+    // Resize and re-center starfields
+    this.starsBack.setDisplaySize(this.worldWidth, this.worldHeight);
+    this.starsBack.setPosition(this.worldWidth / 2, this.worldHeight / 2);
+    this.stars.setDisplaySize(this.worldWidth, this.worldHeight);
+    this.stars.setPosition(this.worldWidth / 2, this.worldHeight / 2);
+
+    // Clamp player within new bounds
+    if (this.player) {
+      this.player.x = Phaser.Math.Clamp(this.player.x, 16, this.worldWidth - 16);
+      this.player.y = Phaser.Math.Clamp(this.player.y, 16, this.worldHeight - 16);
+    }
+
+    // Clamp boss if active
+    if (this.boss) {
+      this.boss.x = Phaser.Math.Clamp(this.boss.x, 80, this.worldWidth - 80);
+    }
   }
 
   create() {
@@ -65,13 +94,31 @@ export class Game extends Phaser.Scene {
     this.enemiesDestroyed = 0;
     this.powerUpsCollected = 0;
 
+    this.touchEnabled = this.sys.game.device.input.touch;
+
     this.starsBack = this.add.tileSprite(400, 300, 800, 600, 'pixel');
     this.starsBack.setTint(0x111111);
 
     this.stars = this.add.tileSprite(400, 300, 800, 600, 'pixel');
     this.stars.setTint(0x222222);
 
-    this.player = this.physics.add.sprite(400, 500, 'pixel').setTint(0x00ff00);
+    const scaleRes = applyScale(
+      this,
+      this.physics.world,
+      this.cameras.main,
+      this.scale.gameSize.width,
+      this.scale.gameSize.height,
+    );
+    this.worldWidth = scaleRes.worldWidth;
+    this.worldHeight = scaleRes.worldHeight;
+
+    // Fit background to current world
+    this.starsBack.setDisplaySize(this.worldWidth, this.worldHeight);
+    this.starsBack.setPosition(this.worldWidth / 2, this.worldHeight / 2);
+    this.stars.setDisplaySize(this.worldWidth, this.worldHeight);
+    this.stars.setPosition(this.worldWidth / 2, this.worldHeight / 2);
+
+    this.player = this.physics.add.sprite(this.worldWidth / 2, this.worldHeight - 100, 'pixel').setTint(0x00ff00);
     this.player.setDisplaySize(32, 32);
     this.player.setCollideWorldBounds(true);
 
@@ -151,15 +198,27 @@ export class Game extends Phaser.Scene {
 
     this.scene.launch('UI');
 
-    this.input.on('pointerdown', () => {
+    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
       this.enableAudio();
-      if (!this.isPaused) this.fireBullet();
+      const screenW = this.scale.gameSize.width;
+      const canFireHere = this.touchEnabled ? pointer.x > screenW * 0.5 : true;
+      if (!this.isPaused && canFireHere) {
+        this.fireBullet();
+      }
     });
 
     // Wait for UI scene to be ready before emitting events
     this.time.delayedCall(100, () => {
       this.events.emit('powerUpUpdate', { rapidFire: false, shield: false });
     });
+
+    // Listen for joystick updates from UI scene
+    this.events.on('joystickMove', (vec: { x: number; y: number }) => {
+      this.joystickVector.set(vec.x, vec.y);
+    });
+
+    // Handle dynamic resizing
+    this.scale.on('resize', this.handleResize, this);
   }
 
   update(time: number) {
@@ -179,26 +238,34 @@ export class Game extends Phaser.Scene {
 
     this.bullets.children.entries.forEach((bullet) => {
       const b = bullet as Phaser.Physics.Arcade.Sprite;
-      if (b.active && (b.y < -20 || b.y > 620)) {
+      const wb = this.physics.world.bounds;
+      if (
+        b.active &&
+        (b.y < -20 || b.y > wb.height + 20 || b.x < -20 || b.x > wb.width + 20)
+      ) {
         b.setActive(false);
         b.setVisible(false);
       }
     });
 
     const speed = 300;
-    this.player.setVelocity(0);
+    let vx = 0;
+    let vy = 0;
 
-    if (this.cursors.left.isDown || this.wasd.A.isDown) {
-      this.player.setVelocityX(-speed);
-    } else if (this.cursors.right.isDown || this.wasd.D.isDown) {
-      this.player.setVelocityX(speed);
+    // Keyboard input
+    if (this.cursors.left.isDown || this.wasd.A.isDown) vx -= 1;
+    if (this.cursors.right.isDown || this.wasd.D.isDown) vx += 1;
+    if (this.cursors.up.isDown || this.wasd.W.isDown) vy -= 1;
+    if (this.cursors.down.isDown || this.wasd.S.isDown) vy += 1;
+
+    // Joystick input overrides on touch devices
+    if (this.touchEnabled && this.joystickVector.lengthSq() > 0.01) {
+      vx = this.joystickVector.x;
+      vy = this.joystickVector.y;
     }
 
-    if (this.cursors.up.isDown || this.wasd.W.isDown) {
-      this.player.setVelocityY(-speed);
-    } else if (this.cursors.down.isDown || this.wasd.S.isDown) {
-      this.player.setVelocityY(speed);
-    }
+    const len = Math.hypot(vx, vy) || 1;
+    this.player.setVelocity((vx / len) * speed, (vy / len) * speed);
 
     if (this.spaceKey.isDown && time > this.lastFired) {
       this.fireBullet();
@@ -222,7 +289,7 @@ export class Game extends Phaser.Scene {
     this.enemySpawnEvent.paused = true;
     this.powerUpSpawnEvent.paused = true;
 
-    this.boss = this.physics.add.sprite(400, 100, 'pixel');
+    this.boss = this.physics.add.sprite(this.worldWidth / 2, 100, 'pixel');
     this.boss.setTint(BOSS_CONFIG.tint);
     this.boss.setDisplaySize(80, 80);
     this.bossHp = BOSS_CONFIG.hp;
@@ -241,7 +308,7 @@ export class Game extends Phaser.Scene {
     const body = this.boss.body as Phaser.Physics.Arcade.Body;
     body.velocity.x = this.bossDirection * BOSS_CONFIG.speed;
 
-    if (this.boss.x <= 100 || this.boss.x >= 700) {
+    if (this.boss.x <= 100 || this.boss.x >= this.worldWidth - 100) {
       this.bossDirection *= -1;
     }
 
@@ -280,7 +347,11 @@ export class Game extends Phaser.Scene {
   private updateBossBullets() {
     this.bossBullets.children.entries.forEach((bullet) => {
       const b = bullet as Phaser.Physics.Arcade.Sprite;
-      if (b.active && (b.y < -20 || b.y > 620 || b.x < -20 || b.x > 820)) {
+      const wb = this.physics.world.bounds;
+      if (
+        b.active &&
+        (b.y < -20 || b.y > wb.height + 20 || b.x < -20 || b.x > wb.width + 20)
+      ) {
         b.setActive(false);
         b.setVisible(false);
       }
@@ -406,7 +477,8 @@ export class Game extends Phaser.Scene {
 
   private spawnEnemy() {
     const elapsed = this.time.now - this.gameStartTime;
-    const x = Phaser.Math.Between(50, 750);
+    const worldW = this.physics.world.bounds.width;
+    const x = Phaser.Math.Between(50, Math.max(55, worldW - 50));
     const roll = Math.random();
     let enemy: Phaser.Physics.Arcade.Sprite;
     let type: string;
@@ -440,7 +512,8 @@ export class Game extends Phaser.Scene {
   }
 
   private spawnPowerUp() {
-    const x = Phaser.Math.Between(100, 700);
+    const worldW2 = this.physics.world.bounds.width;
+    const x = Phaser.Math.Between(100, Math.max(105, worldW2 - 100));
     const powerUp = this.powerUps.create(x, -50, 'pixel') as Phaser.Physics.Arcade.Sprite;
     if (powerUp) {
       const type = Math.random() < 0.5 ? 'RAPIDFIRE' : 'SHIELD';
