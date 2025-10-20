@@ -37,6 +37,7 @@ export class UI extends Phaser.Scene {
     this.loadSettings();
 
     this.touchEnabled = this.sys.game.device.input.touch;
+    const controlMode = this.registry.get('controlMode') as string | undefined;
 
     this.scoreText = this.add.text(16, 16, 'Score: 0', {
       fontSize: '24px',
@@ -104,7 +105,9 @@ export class UI extends Phaser.Scene {
 
     this.createBossHealthBar();
 
-    this.setupJoystick();
+    if (this.touchEnabled && controlMode !== 'relativeTouch') {
+      this.setupJoystick();
+    }
 
     gameScene.events.on('bankUpdate', (list: string[]) => {
       this.bankedList = list;

@@ -55,6 +55,21 @@ export class Game extends Phaser.Scene {
   private aimPointerId: number | null = null;
   private aimLine?: Phaser.GameObjects.Graphics;
   private bankedPowerUps: string[] = [];
+  // Relative touch controls (mobile-only)
+  private useRelativeTouchControls = false;
+  private activeTouchId: number | null = null;
+  private touchActive = false;
+  private relTouchCurrX = 0;
+  private relTouchCurrY = 0;
+  private relTouchLastX = 0;
+  private relTouchLastY = 0;
+  private rtSensitivityX = 12; // tuning: pixels/frame -> velocity scale
+  private rtSensitivityY = 0; // 0 => horizontal-only
+  private rtMaxSpeedX = 400;
+  private rtMaxSpeedY = 0;
+  private rtDeadZone = 3;
+  private rtLerp = 0.25;
+  private mobileAutoFireMode: 'whileTouching' | 'always' | 'enemyAware' = 'whileTouching';
 
   constructor() {
     super('Game');
@@ -100,6 +115,8 @@ export class Game extends Phaser.Scene {
     this.powerUpsCollected = 0;
 
     this.touchEnabled = this.sys.game.device.input.touch;
+    // Enable relative touch control scheme by default on touch devices
+    this.useRelativeTouchControls = !!this.touchEnabled;
 
     this.starsBack = this.add.tileSprite(400, 300, 800, 600, 'pixel');
     this.starsBack.setTint(0x111111);
@@ -201,9 +218,41 @@ export class Game extends Phaser.Scene {
       loop: true,
     });
 
+    // Announce control mode for UI scene (used to hide joystick on mobile)
+    this.registry.set(
+      'controlMode',
+      this.touchEnabled && this.useRelativeTouchControls ? 'relativeTouch' : 'default',
+    );
+
     this.scene.launch('UI');
 
-    if (this.touchEnabled) {
+    if (this.touchEnabled && this.useRelativeTouchControls) {
+      // Relative touch: one-finger drag anywhere to move ship horizontally following finger in world space
+      this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+        this.enableAudio();
+        if (!this.isPaused && this.activeTouchId === null) {
+          this.activeTouchId = pointer.id;
+          this.touchActive = true;
+          this.relTouchCurrX = this.relTouchLastX = pointer.worldX;
+          this.relTouchCurrY = this.relTouchLastY = pointer.worldY;
+        }
+      });
+      this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
+        if (this.activeTouchId === pointer.id && this.touchActive && !this.isPaused) {
+          this.relTouchCurrX = pointer.worldX;
+          this.relTouchCurrY = pointer.worldY;
+        }
+      });
+      this.input.on('pointerup', (pointer: Phaser.Input.Pointer) => {
+        if (this.activeTouchId === pointer.id) {
+          this.activeTouchId = null;
+          this.touchActive = false;
+        }
+      });
+    }
+
+    // Drag-to-aim handlers (only when relative touch is disabled)
+    if (this.touchEnabled && !this.useRelativeTouchControls) {
       this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
         this.enableAudio();
         const screenW = this.scale.gameSize.width;
@@ -230,7 +279,9 @@ export class Game extends Phaser.Scene {
           this.endAim(pointer);
         }
       });
-    } else {
+    }
+
+    if (!this.touchEnabled) {
       this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
         this.enableAudio();
         const screenW = this.scale.gameSize.width;
@@ -317,13 +368,56 @@ export class Game extends Phaser.Scene {
     const len = Math.hypot(vx, vy) || 1;
     this.player.setVelocity((vx / len) * speed, (vy / len) * speed);
 
+    // Relative touch overrides (mobile-only)
+    if (this.touchEnabled && this.useRelativeTouchControls) {
+      const body = this.player.body as Phaser.Physics.Arcade.Body;
+      if (this.touchActive) {
+        const dx = this.relTouchCurrX - this.relTouchLastX;
+        const adx = Math.abs(dx) >= this.rtDeadZone ? dx : 0;
+
+        // Directly move the ship by the same horizontal delta as the finger
+        if (adx !== 0) {
+          const margin = 16;
+          const newX = Phaser.Math.Clamp(this.player.x + adx, margin, this.worldWidth - margin);
+          this.player.setX(newX);
+        }
+
+        // Zero out velocities while using direct positional control
+        body.setVelocity(0, 0);
+
+        // Update last pointer position for next frame
+        this.relTouchLastX = this.relTouchCurrX;
+        this.relTouchLastY = this.relTouchCurrY;
+      } else {
+        // Ensure no residual velocity when touch ends
+        body.setVelocity(0, 0);
+      }
+    }
+
     if (this.spaceKey.isDown && time > this.lastFired) {
       this.fireBullet();
       this.lastFired = time + this.fireRate;
     }
 
-    if (this.touchEnabled && !this.aimActive) {
-      this.autoFireMobile(time);
+    // Mobile auto-fire selection
+    if (this.touchEnabled) {
+      if (this.useRelativeTouchControls) {
+        if (this.mobileAutoFireMode === 'whileTouching') {
+          if (this.touchActive && time > this.lastFired) {
+            this.fireBullet();
+            this.lastFired = time + this.fireRate;
+          }
+        } else if (this.mobileAutoFireMode === 'always') {
+          if (time > this.lastFired) {
+            this.fireBullet();
+            this.lastFired = time + this.fireRate;
+          }
+        } else if (this.mobileAutoFireMode === 'enemyAware') {
+          this.autoFireMobile(time);
+        }
+      } else if (!this.aimActive) {
+        this.autoFireMobile(time);
+      }
     }
 
     this.updateZigZagEnemies();
@@ -474,6 +568,15 @@ export class Game extends Phaser.Scene {
       this.powerUpSpawnEvent.paused = true;
       this.sound.pauseAll();
       this.events.emit('gamePaused', true);
+      // Clear relative touch state to avoid sticky motion on resume
+      if (this.touchEnabled && this.useRelativeTouchControls) {
+        this.activeTouchId = null;
+        this.touchActive = false;
+        this.relTouchLastX = this.player.x;
+        this.relTouchCurrX = this.player.x;
+        const body = this.player.body as Phaser.Physics.Arcade.Body;
+        body.setVelocity(0, 0);
+      }
     } else {
       this.physics.resume();
       this.enemySpawnEvent.paused = false;
