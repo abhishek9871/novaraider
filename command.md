@@ -1,0 +1,1 @@
+npx wrangler pages deploy dist --project-name=novaraider --branch=main
