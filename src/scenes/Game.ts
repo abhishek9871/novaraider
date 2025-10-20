@@ -8,6 +8,7 @@ import {
   shouldSpawnBoss,
 } from '../utils/GameUtils.js';
 import { applyScale } from '../systems/ScaleManager.js';
+import { HapticManager } from '../systems/HapticManager.js';
 
 export class Game extends Phaser.Scene {
   private player!: Phaser.Physics.Arcade.Sprite;
@@ -50,6 +51,10 @@ export class Game extends Phaser.Scene {
   private worldWidth = 800;
   private worldHeight = 600;
   private joystickVector: Phaser.Math.Vector2 = new Phaser.Math.Vector2(0, 0);
+  private aimActive = false;
+  private aimPointerId: number | null = null;
+  private aimLine?: Phaser.GameObjects.Graphics;
+  private bankedPowerUps: string[] = [];
 
   constructor() {
     super('Game');
@@ -198,18 +203,48 @@ export class Game extends Phaser.Scene {
 
     this.scene.launch('UI');
 
-    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      this.enableAudio();
-      const screenW = this.scale.gameSize.width;
-      const canFireHere = this.touchEnabled ? pointer.x > screenW * 0.5 : true;
-      if (!this.isPaused && canFireHere) {
-        this.fireBullet();
-      }
-    });
+    if (this.touchEnabled) {
+      this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+        this.enableAudio();
+        const screenW = this.scale.gameSize.width;
+        if (!this.isPaused && pointer.x > screenW * 0.5 && !this.aimActive) {
+          this.aimActive = true;
+          this.aimPointerId = pointer.id;
+          if (!this.aimLine) {
+            this.aimLine = this.add.graphics();
+          }
+          this.aimLine.clear();
+          this.aimLine.lineStyle(2, 0xffffff, 0.3);
+          this.updateAim(pointer);
+        }
+      });
+
+      this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
+        if (this.aimActive && this.aimPointerId === pointer.id && !this.isPaused) {
+          this.updateAim(pointer);
+        }
+      });
+
+      this.input.on('pointerup', (pointer: Phaser.Input.Pointer) => {
+        if (this.aimActive && this.aimPointerId === pointer.id) {
+          this.endAim(pointer);
+        }
+      });
+    } else {
+      this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+        this.enableAudio();
+        const screenW = this.scale.gameSize.width;
+        const canFireHere = true;
+        if (!this.isPaused && canFireHere) {
+          this.fireBullet();
+        }
+      });
+    }
 
     // Wait for UI scene to be ready before emitting events
     this.time.delayedCall(100, () => {
       this.events.emit('powerUpUpdate', { rapidFire: false, shield: false });
+      this.events.emit('bankUpdate', [...this.bankedPowerUps]);
     });
 
     // Listen for joystick updates from UI scene
@@ -219,6 +254,21 @@ export class Game extends Phaser.Scene {
 
     // Handle dynamic resizing
     this.scale.on('resize', this.handleResize, this);
+
+    // Listen for UI activations of banked power-ups (mobile only)
+    this.events.on('usePowerUp', (type: string) => {
+      if (!this.touchEnabled) return;
+      const idx = this.bankedPowerUps.indexOf(type);
+      if (idx !== -1) {
+        this.bankedPowerUps.splice(idx, 1);
+        this.events.emit('bankUpdate', [...this.bankedPowerUps]);
+        if (type === 'RAPIDFIRE') {
+          this.activateRapidFire();
+        } else if (type === 'SHIELD') {
+          this.activateShield();
+        }
+      }
+    });
   }
 
   update(time: number) {
@@ -270,6 +320,10 @@ export class Game extends Phaser.Scene {
     if (this.spaceKey.isDown && time > this.lastFired) {
       this.fireBullet();
       this.lastFired = time + this.fireRate;
+    }
+
+    if (this.touchEnabled && !this.aimActive) {
+      this.autoFireMobile(time);
     }
 
     this.updateZigZagEnemies();
@@ -364,7 +418,8 @@ export class Game extends Phaser.Scene {
     const body = bullet.body as Phaser.Physics.Arcade.Body;
     body.stop();
 
-    this.bossHp -= 1;
+    const dmg = (bullet.getData('damage') as number) || 1;
+    this.bossHp -= dmg;
     this.events.emit('bossHpUpdate', { hp: this.bossHp, maxHp: BOSS_CONFIG.hp });
 
     if (this.bossHp <= 0) {
@@ -450,7 +505,30 @@ export class Game extends Phaser.Scene {
       bullet.setDisplaySize(8, 16);
       const body = bullet.body as Phaser.Physics.Arcade.Body;
       body.velocity.y = -400;
+      bullet.setData('damage', 1);
       this.playSound('shoot');
+    }
+  }
+
+  private fireAimedBullet(angleRad: number, damage: number = 2) {
+    const bullet = this.bullets.get(
+      this.player.x,
+      this.player.y - 20,
+    ) as Phaser.Physics.Arcade.Sprite;
+    if (bullet) {
+      bullet.setActive(true);
+      bullet.setVisible(true);
+      bullet.setTint(0x00aaff);
+      bullet.setDisplaySize(10, 18);
+      const body = bullet.body as Phaser.Physics.Arcade.Body;
+      const speed = 500;
+      body.velocity.x = Math.cos(angleRad) * speed;
+      body.velocity.y = Math.sin(angleRad) * speed;
+      bullet.setData('damage', damage);
+      this.playSound('shoot');
+      if (this.touchEnabled) {
+        HapticManager.specialFire();
+      }
     }
   }
 
@@ -535,10 +613,15 @@ export class Game extends Phaser.Scene {
     this.playSound('pickup');
     this.powerUpsCollected += 1;
 
-    if (type === 'RAPIDFIRE') {
-      this.activateRapidFire();
-    } else if (type === 'SHIELD') {
-      this.activateShield();
+    if (this.touchEnabled) {
+      this.bankedPowerUps.push(type);
+      this.events.emit('bankUpdate', [...this.bankedPowerUps]);
+    } else {
+      if (type === 'RAPIDFIRE') {
+        this.activateRapidFire();
+      } else if (type === 'SHIELD') {
+        this.activateShield();
+      }
     }
   }
 
@@ -552,6 +635,9 @@ export class Game extends Phaser.Scene {
       this.fireRate = this.baseFireRate;
       this.events.emit('powerUpUpdate', { rapidFire: false, shield: this.shieldActive });
     });
+    if (this.touchEnabled) {
+      HapticManager.powerUp();
+    }
   }
 
   private activateShield() {
@@ -565,6 +651,7 @@ export class Game extends Phaser.Scene {
       this.player.setTint(0x00ff00);
       this.events.emit('powerUpUpdate', { rapidFire: this.rapidFireActive, shield: false });
     });
+    HapticManager.powerUp();
   }
 
   private hitEnemy(bullet: Phaser.Physics.Arcade.Sprite, enemy: Phaser.Physics.Arcade.Sprite) {
@@ -573,9 +660,10 @@ export class Game extends Phaser.Scene {
     const body = bullet.body as Phaser.Physics.Arcade.Body;
     body.stop();
 
+    const damage = (bullet.getData('damage') as number) || 1;
     const data = this.enemyData.get(enemy);
     if (data) {
-      data.hp -= 1;
+      data.hp -= damage;
       if (data.hp <= 0) {
         this.enemyData.delete(enemy);
         this.createExplosion(enemy.x, enemy.y);
@@ -611,6 +699,9 @@ export class Game extends Phaser.Scene {
 
     this.playSound('explosion');
     this.createExplosion(this.player.x, this.player.y);
+    if (this.touchEnabled) {
+      HapticManager.damage();
+    }
 
     const elapsed = this.time.now - this.gameStartTime;
     const timeSurvived = Math.floor(elapsed / 1000);
@@ -653,5 +744,59 @@ export class Game extends Phaser.Scene {
       duration: 150,
       yoyo: true,
     });
+  }
+
+  private updateAim(pointer: Phaser.Input.Pointer) {
+    if (!this.aimLine) return;
+    this.aimLine.clear();
+    this.aimLine.lineStyle(2, 0xffffff, 0.3);
+    const angle = Phaser.Math.Angle.Between(this.player.x, this.player.y, pointer.x, pointer.y);
+    const length = 80;
+    const ex = this.player.x + Math.cos(angle) * length;
+    const ey = this.player.y + Math.sin(angle) * length;
+    this.aimLine.strokeLineShape(new Phaser.Geom.Line(this.player.x, this.player.y, ex, ey));
+  }
+
+  private endAim(pointer: Phaser.Input.Pointer) {
+    const angle = Phaser.Math.Angle.Between(this.player.x, this.player.y, pointer.x, pointer.y);
+    if (this.aimLine) {
+      this.aimLine.clear();
+    }
+    this.aimActive = false;
+    this.aimPointerId = null;
+    this.fireAimedBullet(angle, 2);
+    this.lastFired = this.time.now + this.fireRate; // small cooldown after special shot
+  }
+
+  private autoFireMobile(time: number) {
+    if (time <= this.lastFired) return;
+    const px = this.player.x;
+    const py = this.player.y;
+    const maxDist = 400;
+    const coneDeg = 45;
+
+    const checkGroup = (grp: Phaser.Physics.Arcade.Group) => {
+      for (const ch of grp.children.entries) {
+        const e = ch as Phaser.Physics.Arcade.Sprite;
+        if (!e.active) continue;
+        const dx = e.x - px;
+        const dy = e.y - py;
+        const dist = Math.hypot(dx, dy);
+        if (dist > maxDist) continue;
+        if (dy >= 0) continue; // only forward (up)
+        const dot = Phaser.Math.Clamp(-dy / dist, -1, 1);
+        const ang = Phaser.Math.RadToDeg(Math.acos(dot));
+        if (ang <= coneDeg) {
+          this.fireBullet();
+          this.lastFired = time + this.fireRate;
+          return true;
+        }
+      }
+      return false;
+    };
+
+    if (checkGroup(this.enemies)) return;
+    if (checkGroup(this.zigzagEnemies)) return;
+    checkGroup(this.fastEnemies);
   }
 }

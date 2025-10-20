@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { POWERUP_TYPES } from '../systems/PowerUpTypes.js';
 
 export class UI extends Phaser.Scene {
   private scoreText!: Phaser.GameObjects.Text;
@@ -25,6 +26,8 @@ export class UI extends Phaser.Scene {
   private joystickActive: boolean = false;
   private joystickMaxRadius: number = 50;
   private joystickCenter: Phaser.Math.Vector2 = new Phaser.Math.Vector2(80, 520);
+  private powerButtonsContainer!: Phaser.GameObjects.Container;
+  private bankedList: string[] = [];
 
   constructor() {
     super('UI');
@@ -102,6 +105,13 @@ export class UI extends Phaser.Scene {
     this.createBossHealthBar();
 
     this.setupJoystick();
+
+    gameScene.events.on('bankUpdate', (list: string[]) => {
+      this.bankedList = list;
+      this.renderPowerButtons();
+    });
+
+    this.setupPowerButtons();
 
     this.layoutUI(this.scale.gameSize.width, this.scale.gameSize.height);
     this.scale.on('resize', (gameSize: Phaser.Structs.Size) => {
@@ -314,6 +324,9 @@ export class UI extends Phaser.Scene {
     if (this.joystickThumb && !this.joystickActive) {
       this.joystickThumb.setPosition(this.joystickCenter.x, this.joystickCenter.y);
     }
+    if (this.powerButtonsContainer && this.touchEnabled) {
+      this.renderPowerButtons();
+    }
   }
 
   private setupJoystick() {
@@ -352,20 +365,54 @@ export class UI extends Phaser.Scene {
     });
   }
 
-  private updateJoystick(px: number, py: number) {
-    const dx = px - this.joystickCenter.x;
-    const dy = py - this.joystickCenter.y;
-    const len = Math.hypot(dx, dy);
-    const clamped = Math.min(len, this.joystickMaxRadius);
-    const angle = Math.atan2(dy, dx);
-    const nx = Math.cos(angle);
-    const ny = Math.sin(angle);
-    const tx = this.joystickCenter.x + nx * clamped;
-    const ty = this.joystickCenter.y + ny * clamped;
-    this.joystickThumb.setPosition(tx, ty);
-    const vx = (clamped / this.joystickMaxRadius) * nx;
-    const vy = (clamped / this.joystickMaxRadius) * ny;
-    const gameScene = this.scene.get('Game');
-    gameScene.events.emit('joystickMove', { x: vx, y: vy });
-  }
+
+private updateJoystick(px: number, py: number) {
+const dx = px - this.joystickCenter.x;
+const dy = py - this.joystickCenter.y;
+const len = Math.hypot(dx, dy);
+const clamped = Math.min(len, this.joystickMaxRadius);
+const angle = Math.atan2(dy, dx);
+const nx = Math.cos(angle);
+const ny = Math.sin(angle);
+const tx = this.joystickCenter.x + nx * clamped;
+const ty = this.joystickCenter.y + ny * clamped;
+this.joystickThumb.setPosition(tx, ty);
+const vx = (clamped / this.joystickMaxRadius) * nx;
+const vy = (clamped / this.joystickMaxRadius) * ny;
+const gameScene = this.scene.get('Game');
+gameScene.events.emit('joystickMove', { x: vx, y: vy });
+}
+
+private setupPowerButtons() {
+if (!this.touchEnabled) return;
+this.powerButtonsContainer = this.add.container(0, 0);
+this.powerButtonsContainer.setVisible(true);
+this.renderPowerButtons();
+}
+
+private renderPowerButtons() {
+if (!this.touchEnabled || !this.powerButtonsContainer) return;
+this.powerButtonsContainer.removeAll(true);
+
+const radius = 20;
+const gap = 10;
+const margin = 16;
+const baseY = this.uiHeight - 80;
+
+const gameScene = this.scene.get('Game');
+
+this.bankedList.forEach((type, i) => {
+const tint = type === 'RAPIDFIRE' ? POWERUP_TYPES.RAPIDFIRE.tint : POWERUP_TYPES.SHIELD.tint;
+const x = this.uiWidth - (margin + radius) - i * ((radius * 2) + gap);
+const y = baseY;
+const circle = this.add.circle(x, y, radius, tint, 0.6).setStrokeStyle(2, 0xffffff, 0.6);
+circle.setInteractive({ useHandCursor: true });
+circle.on('pointerdown', (_p: any, _lx: any, _ly: any, event: any) => {
+if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+gameScene.events.emit('usePowerUp', type);
+});
+this.powerButtonsContainer.add(circle);
+});
+}
+
 }
