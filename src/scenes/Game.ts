@@ -13,6 +13,7 @@ import { HapticManager } from '../systems/HapticManager.js';
 export class Game extends Phaser.Scene {
   private player!: Phaser.Physics.Arcade.Sprite;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
+  private remote!: Phaser.Types.Input.Keyboard.CursorKeys;
   private wasd!: {
     W: Phaser.Input.Keyboard.Key;
     A: Phaser.Input.Keyboard.Key;
@@ -145,6 +146,7 @@ export class Game extends Phaser.Scene {
     this.player.setCollideWorldBounds(true);
 
     this.cursors = this.input.keyboard!.createCursorKeys();
+    this.remote = this.input.keyboard!.createCursorKeys();
     this.wasd = this.input.keyboard!.addKeys('W,A,S,D') as any;
     this.spaceKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
     this.pauseKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.P);
@@ -354,10 +356,10 @@ export class Game extends Phaser.Scene {
     let vy = 0;
 
     // Keyboard input
-    if (this.cursors.left.isDown || this.wasd.A.isDown) vx -= 1;
-    if (this.cursors.right.isDown || this.wasd.D.isDown) vx += 1;
-    if (this.cursors.up.isDown || this.wasd.W.isDown) vy -= 1;
-    if (this.cursors.down.isDown || this.wasd.S.isDown) vy += 1;
+    if (this.cursors.left.isDown || this.wasd.A.isDown || this.remote.left.isDown) vx -= 1;
+    if (this.cursors.right.isDown || this.wasd.D.isDown || this.remote.right.isDown) vx += 1;
+    if (this.cursors.up.isDown || this.wasd.W.isDown || this.remote.up.isDown) vy -= 1;
+    if (this.cursors.down.isDown || this.wasd.S.isDown || this.remote.down.isDown) vy += 1;
 
     // Joystick input overrides on touch devices
     if (this.touchEnabled && this.joystickVector.lengthSq() > 0.01) {
